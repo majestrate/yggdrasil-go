@@ -14,6 +14,8 @@ import "time"
 import "sync"
 import "fmt"
 
+import reuse "github.com/kavu/go_reuseport"
+
 type udpInterface struct {
 	core  *Core
 	sock  *net.UDPConn // Or more general PacketConn?
@@ -55,6 +57,7 @@ type connInfo struct {
 	out      chan []byte
 	countIn  uint8
 	countOut uint8
+	sock     *net.UDPConn
 }
 
 type udpKeys struct {
@@ -64,16 +67,13 @@ type udpKeys struct {
 
 func (iface *udpInterface) init(core *Core, addr string) {
 	iface.core = core
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	rsock, err := reuse.ListenPacket("udp", addr)
 	if err != nil {
 		panic(err)
 	}
-	iface.sock, err = net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		panic(err)
-	}
+	iface.sock = rsock.(*net.UDPConn)
 	iface.conns = make(map[connAddr]*connInfo)
-	go iface.reader()
+	go iface.reader(iface.sock)
 }
 
 func (iface *udpInterface) sendKeys(addr connAddr) {
@@ -111,6 +111,7 @@ func (iface *udpInterface) startConn(info *connInfo) {
 		close(info.linkIn)
 		close(info.keysIn)
 		close(info.out)
+		info.sock.Close()
 		iface.core.log.Println("Removing peer:", info.name)
 	}()
 	for {
@@ -156,6 +157,10 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 	iface.mutex.RUnlock() // TODO? keep the lock longer?...
 	if !isIn {
 		udpAddr := addr.toUDPAddr()
+		rSock, err := reuse.ListenPacket("udp", iface.sock.LocalAddr().String())
+		if err != nil {
+			panic(err)
+		}
 		themNodeID := getNodeID(&ks.box)
 		themAddr := address_addrForNodeID(themNodeID)
 		themAddrString := net.IP(themAddr[:]).String()
@@ -167,36 +172,8 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 			linkIn: make(chan []byte, 1),
 			keysIn: make(chan *udpKeys, 1),
 			out:    make(chan []byte, 1024),
+			sock:   rSock.(*net.UDPConn),
 		}
-		/*
-		   conn.in = func (msg []byte) { conn.peer.handlePacket(msg, conn.linkIn) }
-		   conn.peer.out = func (msg []byte) {
-		     start := time.Now()
-		     iface.sock.WriteToUDP(msg, udpAddr)
-		     timed := time.Since(start)
-		     conn.peer.updateBandwidth(len(msg), timed)
-		     util_putBytes(msg)
-		   } // Old version, always one syscall per packet
-		   //*/
-		/*
-		   conn.peer.out = func (msg []byte) {
-		     defer func() { recover() }()
-		     select {
-		       case conn.out<-msg:
-		       default: util_putBytes(msg)
-		     }
-		   }
-		   go func () {
-		     for msg := range conn.out {
-		       start := time.Now()
-		       iface.sock.WriteToUDP(msg, udpAddr)
-		       timed := time.Since(start)
-		       conn.peer.updateBandwidth(len(msg), timed)
-		       util_putBytes(msg)
-		     }
-		   }()
-		   //*/
-		//*
 		var inChunks uint8
 		var inBuf []byte
 		conn.in = func(bs []byte) {
@@ -251,7 +228,8 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 					nChunks, nChunk, count := uint8(len(chunks)), uint8(idx)+1, conn.countOut
 					out = udp_encode(out[:0], nChunks, nChunk, count, bs)
 					//iface.core.log.Println("DEBUG out:", nChunks, nChunk, count, len(bs))
-					iface.sock.WriteToUDP(out, udpAddr)
+					//iface.sock.WriteToUDP(out, udpAddr)
+					conn.sock.WriteToUDP(out, udpAddr)
 				}
 				timed := time.Since(start)
 				conn.countOut += 1
@@ -259,13 +237,13 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 				util_putBytes(msg)
 			}
 		}()
-		//*/
 		iface.mutex.Lock()
 		iface.conns[addr] = conn
 		iface.mutex.Unlock()
 		iface.core.log.Println("Adding peer:", conn.name)
 		go iface.startConn(conn)
 		go conn.peer.linkLoop(conn.linkIn)
+		go iface.reader(conn.sock)
 		iface.sendKeys(conn.addr)
 	}
 	func() {
@@ -285,13 +263,16 @@ func (iface *udpInterface) handlePacket(msg []byte, addr connAddr) {
 	iface.mutex.RUnlock()
 }
 
-func (iface *udpInterface) reader() {
+func (iface *udpInterface) reader(sock *net.UDPConn) {
 	bs := make([]byte, 2048) // This needs to be large enough for everything...
 	for {
 		//iface.core.log.Println("Starting read")
-		n, udpAddr, err := iface.sock.ReadFromUDP(bs)
+		n, udpAddr, err := sock.ReadFromUDP(bs)
 		//iface.core.log.Println("Read", n, udpAddr.String(), err)
 		if err != nil {
+			if sock != iface.sock {
+				break
+			} // peer sock closed
 			panic(err)
 			break
 		}
