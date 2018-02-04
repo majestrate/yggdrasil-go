@@ -17,6 +17,8 @@ import "time"
 import "sync"
 import "fmt"
 
+import "golang.org/x/net/ipv6"
+
 type udpInterface struct {
 	core  *Core
 	sock  *net.UDPConn // Or more general PacketConn?
@@ -169,35 +171,6 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 			keysIn: make(chan *udpKeys, 1),
 			out:    make(chan []byte, 32),
 		}
-		/*
-		   conn.in = func (msg []byte) { conn.peer.handlePacket(msg, conn.linkIn) }
-		   conn.peer.out = func (msg []byte) {
-		     start := time.Now()
-		     iface.sock.WriteToUDP(msg, udpAddr)
-		     timed := time.Since(start)
-		     conn.peer.updateBandwidth(len(msg), timed)
-		     util_putBytes(msg)
-		   } // Old version, always one syscall per packet
-		   //*/
-		/*
-		   conn.peer.out = func (msg []byte) {
-		     defer func() { recover() }()
-		     select {
-		       case conn.out<-msg:
-		       default: util_putBytes(msg)
-		     }
-		   }
-		   go func () {
-		     for msg := range conn.out {
-		       start := time.Now()
-		       iface.sock.WriteToUDP(msg, udpAddr)
-		       timed := time.Since(start)
-		       conn.peer.updateBandwidth(len(msg), timed)
-		       util_putBytes(msg)
-		     }
-		   }()
-		   //*/
-		//*
 		var inChunks uint8
 		var inBuf []byte
 		conn.in = func(bs []byte) {
@@ -234,8 +207,9 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 			}
 		}
 		go func() {
-			var out []byte
+			var msgs []ipv6.Message
 			var chunks [][]byte
+			pconn := ipv6.NewPacketConn(iface.sock)
 			for msg := range conn.out {
 				chunks = chunks[:0]
 				bs := msg
@@ -247,16 +221,25 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 				if len(chunks) > 255 {
 					continue
 				}
-				start := time.Now()
+				msgs = msgs[:0]
+				size := 0
 				for idx, bs := range chunks {
 					nChunks, nChunk, count := uint8(len(chunks)), uint8(idx)+1, conn.countOut
-					out = udp_encode(out[:0], nChunks, nChunk, count, bs)
-					//iface.core.log.Println("DEBUG out:", nChunks, nChunk, count, len(bs))
-					iface.sock.WriteToUDP(out, udpAddr)
+					m := ipv6.Message{
+						Buffers: [][]byte{{nChunks, nChunk, count}, bs},
+						Addr:    udpAddr,
+					}
+					msgs = append(msgs, m)
+					size += 3 + len(bs)
+				}
+				start := time.Now()
+				for idx := 0; idx < len(msgs); {
+					written, _ := pconn.WriteBatch(msgs[idx:], 0)
+					idx += written
 				}
 				timed := time.Since(start)
 				conn.countOut += 1
-				conn.peer.updateBandwidth(len(msg), timed)
+				conn.peer.updateBandwidth(size, timed)
 				util_putBytes(msg)
 			}
 		}()
@@ -322,7 +305,7 @@ func (iface *udpInterface) reader() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-const udp_chunkSize = 65535
+const udp_chunkSize = 1024
 
 func udp_decode(bs []byte) (chunks, chunk, count uint8, payload []byte) {
 	if len(bs) >= 3 {
