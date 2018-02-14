@@ -72,7 +72,9 @@ func (n *node) init(cfg *nodeConfig, logger *log.Logger) {
 	n.core.DEBUG_setIfceExpr(ifceExpr)
 	logger.Println("Starting interface...")
 	n.core.DEBUG_setupAndStartGlobalTCPInterface(cfg.Listen) // Listen for peers on TCP
-	n.core.DEBUG_setupAndStartGlobalUDPInterface(cfg.Listen) // Also listen on UDP, TODO allow separate configuration for ip/port to listen on each of these
+	newAddr := n.core.DEBUG_getGlobalTCPAddr().String()
+	n.core.DEBUG_setupAndStartGlobalUDPInterface(newAddr) // Also listen on UDP, TODO allow separate configuration for ip/port to listen on each of these
+	n.core.DEBUG_setupAndStartGlobalSCTPInterface(newAddr)
 	logger.Println("Started interface")
 	logger.Println("Starting admin socket...")
 	n.core.DEBUG_setupAndStartAdminInterface(cfg.AdminListen)
@@ -166,7 +168,8 @@ func (n *node) listen() {
 		saddr := addr.String()
 		//if _, isIn := n.peers[saddr]; isIn { continue }
 		//n.peers[saddr] = struct{}{}
-		n.core.DEBUG_addTCPConn(saddr) // FIXME? can result in 2 connections per peer
+		//n.core.DEBUG_addTCPConn(saddr) // FIXME? can result in 2 connections per peer
+		n.core.DEBUG_addSCTPConn(saddr) // FIXME? can result in 2 connections per peer
 		//fmt.Println("DEBUG:", "added multicast peer:", saddr)
 	}
 }

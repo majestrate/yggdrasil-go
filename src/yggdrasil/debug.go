@@ -318,6 +318,22 @@ func (c *Core) DEBUG_startSelfPeer() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+func (c *Core) DEBUG_setupAndStartGlobalSCTPInterface(addrport string) {
+	iface := sctpInterface{}
+	iface.init(c, addrport)
+	c.sctp = &iface
+}
+
+func (c *Core) DEBUG_getGlobalSCTPAddr() net.Addr {
+	return c.sctp.serv.Addr()
+}
+
+func (c *Core) DEBUG_addSCTPConn(saddr string) {
+	c.sctp.call(saddr)
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 /*
 func (c *Core) DEBUG_setupAndStartGlobalKCPInterface(addrport string) {
   iface := kcpInterface{}

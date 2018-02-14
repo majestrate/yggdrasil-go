@@ -21,6 +21,7 @@ type Core struct {
 	searches    searches
 	tcp         *tcpInterface
 	udp         *udpInterface
+	sctp        *sctpInterface
 	log         *log.Logger
 	ifceExpr    *regexp.Regexp // the zone of link-local IPv6 peers must match this
 }
