@@ -96,12 +96,16 @@ func (iface *sctpInterface) call(saddr string) {
 
 func (iface *sctpInterface) handler(sock *sctp.SCTPConn) {
 	defer sock.Close()
+	err := sock.SetNoDelay(true)
+	if err != nil {
+		panic(err)
+	}
 	// Get our keys
 	keys := []byte{}
 	keys = append(keys, sctp_key[:]...)
 	keys = append(keys, iface.core.boxPub[:]...)
 	keys = append(keys, iface.core.sigPub[:]...)
-	_, err := sock.Write(keys)
+	_, err = sock.Write(keys)
 	if err != nil {
 		return
 	}
