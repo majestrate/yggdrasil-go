@@ -100,6 +100,10 @@ func (iface *sctpInterface) handler(sock *sctp.SCTPConn) {
 	if err != nil {
 		panic(err)
 	}
+	err = sock.SetMaxSeg(1024)
+	if err != nil {
+		panic(err)
+	}
 	// Get our keys
 	keys := []byte{}
 	keys = append(keys, sctp_key[:]...)
