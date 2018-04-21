@@ -12,6 +12,7 @@ import "fmt"
 import "net"
 import "log"
 import "regexp"
+import "yggdrasil/i2p"
 
 // Core
 
@@ -282,12 +283,42 @@ func (c *Core) DEBUG_init(bpub []byte,
 
 func (c *Core) DEBUG_setupAndStartGlobalUDPInterface(addrport string) {
 	iface := udpInterface{}
-	iface.init(c, addrport)
+	conn, err := net.ListenPacket("udp", addrport)
+	if err != nil {
+		panic(err)
+	}
+	iface.init(c, conn)
 	c.udp = &iface
+}
+
+func (c *Core) DEBUG_setupAndStartGlobalI2PInterface(i2paddr, keyfile string) {
+	iface := udpInterface{}
+	c.i2pSession = i2p.NewSession("yggdrasil", i2paddr, keyfile, map[string]string{})
+	err := c.i2pSession.Open()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("we are", c.i2pSession.B32Addr())
+	iface.init(c, c.i2pSession.PacketConn())
+	c.i2p = &iface
 }
 
 func (c *Core) DEBUG_getGlobalUDPAddr() *net.UDPAddr {
 	return c.udp.sock.LocalAddr().(*net.UDPAddr)
+}
+
+func (c *Core) DEBUG_maybeSendI2PKeys(saddr string) {
+	i2paddr, err := c.i2pSession.LookupI2P(saddr)
+	if err == nil {
+		var addr connAddr
+		addr.fromAddr(i2paddr)
+		c.i2p.mutex.RLock()
+		_, isIn := c.udp.conns[addr]
+		c.i2p.mutex.RUnlock()
+		if !isIn {
+			c.i2p.sendKeys(addr)
+		}
+	}
 }
 
 func (c *Core) DEBUG_maybeSendUDPKeys(saddr string) {

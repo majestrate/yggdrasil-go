@@ -9,6 +9,7 @@ import "io/ioutil"
 import "net"
 import "os"
 import "os/signal"
+import "strings"
 import "syscall"
 import "time"
 import "regexp"
@@ -64,6 +65,10 @@ func (n *node) init(cfg *nodeConfig, logger *log.Logger) {
 	logger.Println("Starting interface...")
 	n.core.DEBUG_setupAndStartGlobalTCPInterface(cfg.Listen) // Listen for peers on TCP
 	n.core.DEBUG_setupAndStartGlobalUDPInterface(cfg.Listen) // Also listen on UDP, TODO allow separate configuration for ip/port to listen on each of these
+	if cfg.Net.I2P.Enabled {
+		logger.Println("Starting I2P Session")
+		n.core.DEBUG_setupAndStartGlobalI2PInterface(cfg.Net.I2P.Addr, cfg.Net.I2P.Keyfile)
+	}
 	logger.Println("Started interface")
 	logger.Println("Starting admin socket...")
 	n.core.DEBUG_setupAndStartAdminInterface(cfg.AdminListen)
@@ -79,6 +84,8 @@ func (n *node) init(cfg *nodeConfig, logger *log.Logger) {
 					n.core.DEBUG_maybeSendUDPKeys(p[4:])
 				case len(p) >= 4 && p[:4] == "tcp:":
 					n.core.DEBUG_addTCPConn(p[4:])
+				case strings.HasSuffix(p, ".i2p"):
+					n.core.DEBUG_maybeSendI2PKeys(p)
 				default:
 					n.core.DEBUG_addTCPConn(p)
 				}

@@ -19,12 +19,13 @@ import "fmt"
 
 type udpInterface struct {
 	core  *Core
-	sock  *net.UDPConn // Or more general PacketConn?
+	sock  net.PacketConn
 	mutex sync.RWMutex // each conn has an owner goroutine
 	conns map[connAddr]*connInfo
 }
 
 type connAddr struct {
+	addr net.Addr
 	ip   [16]byte
 	port int
 	zone string
@@ -36,13 +37,27 @@ func (c *connAddr) fromUDPAddr(u *net.UDPAddr) {
 	c.zone = u.Zone
 }
 
-func (c *connAddr) toUDPAddr() *net.UDPAddr {
+func (c *connAddr) fromAddr(a net.Addr) {
+	c.addr = a
+}
+
+func (c *connAddr) toUPDAddr() *net.UDPAddr {
+	if c.addr != nil {
+		return nil
+	}
 	var u net.UDPAddr
 	u.IP = make([]byte, 16)
 	copy(u.IP, c.ip[:])
 	u.Port = c.port
 	u.Zone = c.zone
 	return &u
+}
+
+func (c *connAddr) Addr() net.Addr {
+	if c.addr == nil {
+		return c.toUPDAddr()
+	}
+	return c.addr
 }
 
 type connInfo struct {
@@ -65,36 +80,29 @@ type udpKeys struct {
 	sig sigPubKey
 }
 
-func (iface *udpInterface) init(core *Core, addr string) {
+func (iface *udpInterface) init(core *Core, pktconn net.PacketConn) {
 	iface.core = core
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		panic(err)
-	}
-	iface.sock, err = net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		panic(err)
-	}
+	iface.sock = pktconn
 	iface.conns = make(map[connAddr]*connInfo)
 	go iface.reader()
 }
 
 func (iface *udpInterface) sendKeys(addr connAddr) {
-	udpAddr := addr.toUDPAddr()
+	udpAddr := addr.Addr()
 	msg := []byte{}
 	msg = udp_encode(msg, 0, 0, 0, nil)
 	msg = append(msg, iface.core.boxPub[:]...)
 	msg = append(msg, iface.core.sigPub[:]...)
-	iface.sock.WriteToUDP(msg, udpAddr)
+	iface.sock.WriteTo(msg, udpAddr)
 }
 
 func (iface *udpInterface) sendClose(addr connAddr) {
-	udpAddr := addr.toUDPAddr()
+	udpAddr := addr.Addr()
 	msg := []byte{}
 	msg = udp_encode(msg, 0, 1, 0, nil)
 	msg = append(msg, iface.core.boxPub[:]...)
 	msg = append(msg, iface.core.sigPub[:]...)
-	iface.sock.WriteToUDP(msg, udpAddr)
+	iface.sock.WriteTo(msg, udpAddr)
 }
 
 func udp_isKeys(msg []byte) bool {
@@ -212,11 +220,12 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 	conn, isIn := iface.conns[addr]
 	iface.mutex.RUnlock()
 	if !isIn {
-		udpAddr := addr.toUDPAddr()
+		a := addr.Addr()
+		udpAddr := addr.toUPDAddr()
 		themNodeID := getNodeID(&ks.box)
 		themAddr := address_addrForNodeID(themNodeID)
 		themAddrString := net.IP(themAddr[:]).String()
-		themString := fmt.Sprintf("%s@%s", themAddrString, udpAddr.String())
+		themString := fmt.Sprintf("%s@%s", themAddrString, a.String())
 		conn = &connInfo{
 			name:      themString,
 			addr:      connAddr(addr),
@@ -227,10 +236,15 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 			out:       make(chan []byte, 32),
 			chunkSize: 576 - 60 - 8 - 3, // max safe - max ip - udp header - chunk overhead
 		}
-		if udpAddr.IP.IsLinkLocalUnicast() {
-			ifce, err := net.InterfaceByName(udpAddr.Zone)
-			if ifce != nil && err == nil {
-				conn.chunkSize = uint16(ifce.MTU) - 60 - 8 - 3
+		if udpAddr == nil || udpAddr.IP.IsLinkLocalUnicast() {
+			if udpAddr == nil {
+				// i2p mtu
+				conn.chunkSize = 8000
+			} else {
+				ifce, err := net.InterfaceByName(udpAddr.Zone)
+				if ifce != nil && err == nil {
+					conn.chunkSize = uint16(ifce.MTU) - 60 - 8 - 3
+				}
 			}
 		}
 		var inChunks uint8
@@ -287,7 +301,7 @@ func (iface *udpInterface) handleKeys(msg []byte, addr connAddr) {
 					nChunks, nChunk, count := uint8(len(chunks)), uint8(idx)+1, conn.countOut
 					out = udp_encode(out[:0], nChunks, nChunk, count, bs)
 					//iface.core.log.Println("DEBUG out:", nChunks, nChunk, count, len(bs))
-					iface.sock.WriteToUDP(out, udpAddr)
+					iface.sock.WriteTo(out, a)
 				}
 				timed := time.Since(start)
 				conn.countOut += 1
@@ -325,7 +339,7 @@ func (iface *udpInterface) reader() {
 	iface.core.log.Println("Listening for UDP on:", iface.sock.LocalAddr().String())
 	bs := make([]byte, 65536) // This needs to be large enough for everything...
 	for {
-		n, udpAddr, err := iface.sock.ReadFromUDP(bs)
+		n, from, err := iface.sock.ReadFrom(bs)
 		//iface.core.log.Println("DEBUG: read:", bs[0], bs[1], bs[2], n)
 		if err != nil {
 			panic(err)
@@ -333,17 +347,24 @@ func (iface *udpInterface) reader() {
 		}
 		msg := bs[:n]
 		var addr connAddr
-		addr.fromUDPAddr(udpAddr)
+		udpAddr, ok := from.(*net.UDPAddr)
+		if ok {
+			addr.fromUDPAddr(udpAddr)
+		} else {
+			addr.fromAddr(from)
+		}
 		switch {
 		case udp_isKeys(msg):
-			var them address
-			copy(them[:], udpAddr.IP.To16())
-			if them.isValid() {
-				continue
-			}
-			if udpAddr.IP.IsLinkLocalUnicast() &&
-				!iface.core.ifceExpr.MatchString(udpAddr.Zone) {
-				continue
+			if ok {
+				var them address
+				copy(them[:], udpAddr.IP.To16())
+				if them.isValid() {
+					continue
+				}
+				if udpAddr.IP.IsLinkLocalUnicast() &&
+					!iface.core.ifceExpr.MatchString(udpAddr.Zone) {
+					continue
+				}
 			}
 			iface.handleKeys(msg, addr)
 		case udp_isClose(msg):

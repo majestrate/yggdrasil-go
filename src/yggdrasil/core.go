@@ -3,6 +3,7 @@ package yggdrasil
 import "io/ioutil"
 import "log"
 import "regexp"
+import "yggdrasil/i2p"
 
 type Core struct {
 	// This is the main data structure that holds everything else for a node
@@ -22,6 +23,8 @@ type Core struct {
 	Dialer      Dialer
 	tcp         *tcpInterface
 	udp         *udpInterface
+	i2p         *udpInterface
+	i2pSession  i2p.Session
 	log         *log.Logger
 	ifceExpr    *regexp.Regexp // the zone of link-local IPv6 peers must match this
 }
