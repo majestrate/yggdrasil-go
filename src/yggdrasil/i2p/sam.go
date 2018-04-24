@@ -258,7 +258,7 @@ func (s *samSession) udpAddr() (string, string, error) {
 
 func (s *samSession) createSession() (err error) {
 	// try opening if this session isn't already open
-	optsstr := " inbound.name=XD"
+	optsstr := ""
 	if s.opts != nil {
 		for k, v := range s.opts {
 			optsstr += fmt.Sprintf(" %s=%s", k, v)
@@ -330,7 +330,7 @@ func (s *samSession) Open() (err error) {
 			a, err = s.LookupI2P("ME")
 			if err == nil {
 				s.keys.pubkey = a.String()
-				s.pktconn.laddr = a
+				s.pktconn.laddr = I2PAddr(s.keys.pubkey)
 			}
 		}
 	}
