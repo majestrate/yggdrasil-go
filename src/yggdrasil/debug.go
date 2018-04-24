@@ -300,7 +300,7 @@ func (c *Core) DEBUG_setupAndStartGlobalI2PInterface(i2paddr, keyfile string) {
 	}
 	pkt := c.i2pSession.PacketConn()
 	addr := pkt.LocalAddr()
-	fmt.Println("we are", addr.(i2p.I2PAddr).Base32Addr().String())
+	c.log.Println("we are", addr.(i2p.I2PAddr).Base32Addr().String())
 	iface.init(c, pkt)
 	c.i2p = &iface
 }
